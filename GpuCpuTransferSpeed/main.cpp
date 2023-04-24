@@ -1,11 +1,13 @@
 #include <d3d11.h>
 #include <chrono>
 #include <iostream>
+#include <wrl/client.h>
 
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3d11.lib")
 
 using std::chrono::high_resolution_clock;
+using Microsoft::WRL::ComPtr;
 
 static void print_time(std::string tag, std::chrono::steady_clock::time_point start)
 {
@@ -29,8 +31,11 @@ static std::string HrToString(HRESULT hr)
 static int width = 1920;
 static int height = 1080;
 static bool all = true;
+static int host2gpu_ms = 0;
+static int gpu2host_ms = 0;
+static int gpu2gpu_ms = 0;
 
-static HRESULT HOST_2_GPU(ID3D11DeviceContext* deviceContext, ID3D11Texture2D* defaultTexture)
+static HRESULT HOST_2_GPU(ComPtr<ID3D11DeviceContext> deviceContext, ComPtr<ID3D11Texture2D> defaultTexture)
 {
     D3D11_BOX Box;
     Box.left = 0;
@@ -49,7 +54,7 @@ static HRESULT HOST_2_GPU(ID3D11DeviceContext* deviceContext, ID3D11Texture2D* d
 
     std::cout << "HOST -> GPU" << std::endl;
     auto start = high_resolution_clock::now();
-    deviceContext->UpdateSubresource(defaultTexture, 0, &Box, data, width * 4, 4 * width * height);
+    deviceContext->UpdateSubresource(defaultTexture.Get(), 0, &Box, data, width * 4, 4 * width * height);
     print_time("\tUpdateSubresource", start);
 
     delete[] data;
@@ -57,7 +62,7 @@ static HRESULT HOST_2_GPU(ID3D11DeviceContext* deviceContext, ID3D11Texture2D* d
     return S_OK;
 }
 
-static HRESULT GPU_2_HOST(ID3D11DeviceContext* deviceContext, ID3D11Texture2D* defaultTexture)
+static HRESULT GPU_2_HOST(ComPtr<ID3D11DeviceContext> deviceContext, ComPtr<ID3D11Texture2D> defaultTexture)
 {
     HRESULT hr;
 
@@ -69,19 +74,19 @@ static HRESULT GPU_2_HOST(ID3D11DeviceContext* deviceContext, ID3D11Texture2D* d
     desc.Usage = D3D11_USAGE_STAGING;
     desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     desc.BindFlags = 0;
-    ID3D11Texture2D* stagingTexture;
+    ComPtr<ID3D11Texture2D> stagingTexture;
     hr = device->CreateTexture2D(&desc, nullptr, &stagingTexture);
     CHECK_HR(hr);
 
     auto start = high_resolution_clock::now();
     auto begin = start;
     std::cout << "GPU -> HOST" << std::endl;
-    deviceContext->CopyResource(stagingTexture, defaultTexture);
+    deviceContext->CopyResource(stagingTexture.Get(), defaultTexture.Get());
     print_time("\tCopyResource", start);
 
     D3D11_MAPPED_SUBRESOURCE ResourceDesc = {};
     start = high_resolution_clock::now();
-    hr = deviceContext->Map(stagingTexture, 0, D3D11_MAP_READ, 0, &ResourceDesc);
+    hr = deviceContext->Map(stagingTexture.Get(), 0, D3D11_MAP_READ, 0, &ResourceDesc);
     CHECK_HR(hr);
     print_time("\tMap", start);
     print_time("\tsum", begin);
@@ -96,40 +101,40 @@ static HRESULT GPU_2_HOST(ID3D11DeviceContext* deviceContext, ID3D11Texture2D* d
         }
     }
     start = high_resolution_clock::now();
-    deviceContext->Unmap(stagingTexture, 0);
+    deviceContext->Unmap(stagingTexture.Get(), 0);
 
     return S_OK;
 }
 
-static HRESULT GPU_2_GPU(ID3D11DeviceContext* deviceContext, ID3D11Texture2D* defaultTexture)
+static HRESULT GPU_2_GPU(ComPtr<ID3D11DeviceContext> deviceContext, ComPtr<ID3D11Texture2D> defaultTexture)
 {
     HRESULT hr;
 
     D3D11_TEXTURE2D_DESC desc;
     defaultTexture->GetDesc(&desc);
-    ID3D11Device* device;
-    deviceContext->GetDevice(&device);
+    ComPtr<ID3D11Device> device;
+    deviceContext->GetDevice(device.GetAddressOf());
 
-    ID3D11Texture2D* defaultTexture2;
-    hr = device->CreateTexture2D(&desc, nullptr, &defaultTexture2);
+    ComPtr<ID3D11Texture2D> defaultTexture2;
+    hr = device->CreateTexture2D(&desc, nullptr, defaultTexture2.GetAddressOf());
     CHECK_HR(hr);
 
     auto start = high_resolution_clock::now();
     auto begin = start;
     std::cout << "GPU -> GPU" << std::endl;
-    deviceContext->CopyResource(defaultTexture2, defaultTexture);
+    deviceContext->CopyResource(defaultTexture2.Get(), defaultTexture.Get());
     print_time("\tCopyResource", start);
 
     return S_OK;
 }
 
-static HRESULT Adapter(IDXGIAdapter1* pAdapter)
+static HRESULT Adapter(ComPtr<IDXGIAdapter1> pAdapter)
 {
     HRESULT hr;
 
     // Create a D3D11 device object
-    ID3D11Device* device = NULL;
-    ID3D11DeviceContext* deviceContext = NULL;
+    ComPtr<ID3D11Device> device = NULL;
+    ComPtr<ID3D11DeviceContext> deviceContext = NULL;
     const D3D_FEATURE_LEVEL lvl[] = { 
         D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0,
         D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0,
@@ -138,10 +143,10 @@ static HRESULT Adapter(IDXGIAdapter1* pAdapter)
     uint32_t createFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
     // In Direct3D 11, if you are trying to create a hardware or a software device, set pAdapter != NULL which constrains the other inputs to be:
     // DriverType must be D3D_DRIVER_TYPE_UNKNOWN, Software must be NULL.
-    hr = D3D11CreateDevice(pAdapter, 
+    hr = D3D11CreateDevice(pAdapter.Get(),
         pAdapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
         nullptr, createFlags, lvl, _countof(lvl),
-        D3D11_SDK_VERSION, &device, nullptr, &deviceContext);
+        D3D11_SDK_VERSION, device.GetAddressOf(), nullptr, deviceContext.GetAddressOf());
     CHECK_HR(hr);
 
     // Create a D3D11_TEXTURE2D_DESC structure for the texture
@@ -160,8 +165,8 @@ static HRESULT Adapter(IDXGIAdapter1* pAdapter)
     desc.CPUAccessFlags = 0;
 
     // Create a default usage texture
-    ID3D11Texture2D* defaultTexture;
-    hr = device->CreateTexture2D(&desc, nullptr, &defaultTexture);
+    ComPtr<ID3D11Texture2D> defaultTexture;
+    hr = device->CreateTexture2D(&desc, nullptr, defaultTexture.GetAddressOf());
     CHECK_HR(hr);
 
     hr = HOST_2_GPU(deviceContext, defaultTexture);
@@ -201,12 +206,12 @@ int main(int argc, char ** argv)
     std::cout << "width: " << width << " height: " << height << " all:" << (all ? "true" : "false") << std::endl;
 
     if (all) {
-        IDXGIFactory1* pFactory = NULL;
-        IDXGIAdapter1* pAdapter = NULL;
+        ComPtr<IDXGIFactory1> pFactory = NULL;
+        ComPtr<IDXGIAdapter1> pAdapter = NULL;
 
-        hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&pFactory);
+        hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)pFactory.GetAddressOf());
         CHECK_HR(hr);
-        for (UINT i = 0; pFactory->EnumAdapters1(i, &pAdapter) != DXGI_ERROR_NOT_FOUND; ++i)
+        for (UINT i = 0; pFactory->EnumAdapters1(i, pAdapter.GetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++i)
         {
             DXGI_ADAPTER_DESC adesc;
             hr = pAdapter->GetDesc(&adesc);
