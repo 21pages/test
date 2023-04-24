@@ -14,8 +14,16 @@ static void print_time(std::string tag, std::chrono::steady_clock::time_point st
     auto end = high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     std::cout << tag << ": " << duration.count() * 1.0 / 1000 << "ms" << std::endl;
-
 }
+
+static long long us_since(std::chrono::steady_clock::time_point start)
+{
+    auto end = high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    return duration.count();
+}
+
+
 
 static std::string HrToString(HRESULT hr)
 {
@@ -30,10 +38,13 @@ static std::string HrToString(HRESULT hr)
 
 static int width = 1920;
 static int height = 1080;
+static int max_count = 100;
 static bool all = true;
-static int host2gpu_ms = 0;
-static int gpu2host_ms = 0;
-static int gpu2gpu_ms = 0;
+static long long host2gpu_us = 0;
+static long long gpu2host_us = 0;
+static long long gpu2host_us_copy = 0;
+static long long gpu2host_us_map = 0;
+static long long gpu2gpu_us = 0;
 
 static HRESULT HOST_2_GPU(ComPtr<ID3D11DeviceContext> deviceContext, ComPtr<ID3D11Texture2D> defaultTexture)
 {
@@ -52,10 +63,9 @@ static HRESULT HOST_2_GPU(ComPtr<ID3D11DeviceContext> deviceContext, ComPtr<ID3D
         }
     }
 
-    std::cout << "HOST -> GPU" << std::endl;
     auto start = high_resolution_clock::now();
     deviceContext->UpdateSubresource(defaultTexture.Get(), 0, &Box, data, width * 4, 4 * width * height);
-    print_time("\tUpdateSubresource", start);
+    host2gpu_us += us_since(start);
 
     delete[] data;
 
@@ -80,16 +90,15 @@ static HRESULT GPU_2_HOST(ComPtr<ID3D11DeviceContext> deviceContext, ComPtr<ID3D
 
     auto start = high_resolution_clock::now();
     auto begin = start;
-    std::cout << "GPU -> HOST" << std::endl;
     deviceContext->CopyResource(stagingTexture.Get(), defaultTexture.Get());
-    print_time("\tCopyResource", start);
+    gpu2host_us_copy += us_since(start);
 
     D3D11_MAPPED_SUBRESOURCE ResourceDesc = {};
     start = high_resolution_clock::now();
     hr = deviceContext->Map(stagingTexture.Get(), 0, D3D11_MAP_READ, 0, &ResourceDesc);
     CHECK_HR(hr);
-    print_time("\tMap", start);
-    print_time("\tsum", begin);
+    gpu2host_us_map += us_since(start);
+    gpu2host_us += us_since(begin);
 
     uint8_t* p = (uint8_t*)ResourceDesc.pData;
     for (int i = 0; i < height; i++) {
@@ -100,7 +109,6 @@ static HRESULT GPU_2_HOST(ComPtr<ID3D11DeviceContext> deviceContext, ComPtr<ID3D
             }
         }
     }
-    start = high_resolution_clock::now();
     deviceContext->Unmap(stagingTexture.Get(), 0);
 
     return S_OK;
@@ -120,10 +128,8 @@ static HRESULT GPU_2_GPU(ComPtr<ID3D11DeviceContext> deviceContext, ComPtr<ID3D1
     CHECK_HR(hr);
 
     auto start = high_resolution_clock::now();
-    auto begin = start;
-    std::cout << "GPU -> GPU" << std::endl;
     deviceContext->CopyResource(defaultTexture2.Get(), defaultTexture.Get());
-    print_time("\tCopyResource", start);
+    gpu2gpu_us += us_since(start);
 
     return S_OK;
 }
@@ -181,29 +187,52 @@ static HRESULT Adapter(ComPtr<IDXGIAdapter1> pAdapter)
     return S_OK;
 }
 
+static HRESULT CallAdapter(ComPtr<IDXGIAdapter1> pAdapter)
+{
+    host2gpu_us = 0;
+    gpu2host_us = 0;
+    gpu2host_us_copy = 0;
+    gpu2host_us_map = 0;
+    gpu2gpu_us = 0;
+
+    for (int i = 0; i < max_count; i++) {
+        HRESULT hr = Adapter(pAdapter);
+        CHECK_HR(hr);
+    }
+    std::cout << "HOST -> GPU: " << host2gpu_us * 1.0 / 1000 / max_count << "ms" << std::endl;
+    std::cout << "GPU -> HOST: " << gpu2host_us * 1.0 / 1000 / max_count << "ms" << std::endl;
+    std::cout << "\t\tCopyResource: " << gpu2host_us_copy * 1.0 / 1000 / max_count << "ms" << std::endl;
+    std::cout << "\t\tMap: " << gpu2host_us_map * 1.0 / 1000 / max_count << "ms" << std::endl;
+    std::cout << "GPU -> GPU: " << gpu2gpu_us * 1.0 / 1000 / max_count << "ms" << std::endl;
+
+}
+
 void usage()
 {
-    std::cout << "usage:" << "<exe> w h all" << std::endl;
-    std::cout << "eg: <exe> 1920 1080 false" << std::endl;
-    std::cout << "default: w=" << width << ", h=" << height << " all=" << all << std::endl;
+    std::cout << "usage:" << "<exe> w h count all" << std::endl;
+    std::cout << "eg: <exe> 1920 1080 100 false" << std::endl;
+    std::cout << "default: w=" << width << ", h=" << height << " count=" << max_count << " all=" << (all ? "true" : "false") << std::endl;
 }
 
 
 int main(int argc, char ** argv)
 {
-    if (argc > 1 && argc != 4) {
+    if (argc > 1 && argc != 5) {
         usage();
         return -1;
     }
-    if (argc == 4) {
+    if (argc == 5) {
         width = atoi(argv[1]);
         height = atoi(argv[2]);
-        all = strcmp(argv[3], "true") == 0;
+        max_count = atoi(argv[3]);
+        all = strcmp(argv[4], "true") == 0;
     }
 
     HRESULT hr;
 
-    std::cout << "width: " << width << " height: " << height << " all:" << (all ? "true" : "false") << std::endl;
+    std::cout << "width: " << width << " height: " << height << " count:" << max_count <<  " all:" << (all ? "true" : "false") << std::endl;
+
+
 
     if (all) {
         ComPtr<IDXGIFactory1> pFactory = NULL;
@@ -217,12 +246,12 @@ int main(int argc, char ** argv)
             hr = pAdapter->GetDesc(&adesc);
             CHECK_HR(hr);
             std::wcout << "\n" << L"Adapter " << i + 1 << L": " << adesc.Description << std::endl;
-            hr = Adapter(pAdapter);
+            hr = CallAdapter(pAdapter);
             //CHECK_HR(hr);
         }
     }
     else {
-        Adapter(NULL);
+        CallAdapter(NULL);
     }
 
     return 0;
