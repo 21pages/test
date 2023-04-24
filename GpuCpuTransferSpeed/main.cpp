@@ -151,7 +151,7 @@ static HRESULT Adapter(IDXGIAdapter1* pAdapter)
     desc.Height = height;
     desc.MipLevels = 0;
     desc.ArraySize = 1;
-    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     desc.SampleDesc.Count = 1;
     desc.SampleDesc.Quality = 0;
     desc.MiscFlags = 0;
