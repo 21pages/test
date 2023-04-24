@@ -78,14 +78,14 @@ static HRESULT GPU_2_HOST(ComPtr<ID3D11DeviceContext> deviceContext, ComPtr<ID3D
 
     D3D11_TEXTURE2D_DESC desc;
     defaultTexture->GetDesc(&desc);
-    ID3D11Device* device;
-    deviceContext->GetDevice(&device);
+    ComPtr<ID3D11Device> device;
+    deviceContext->GetDevice(device.GetAddressOf());
 
     desc.Usage = D3D11_USAGE_STAGING;
     desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     desc.BindFlags = 0;
     ComPtr<ID3D11Texture2D> stagingTexture;
-    hr = device->CreateTexture2D(&desc, nullptr, &stagingTexture);
+    hr = device->CreateTexture2D(&desc, nullptr, stagingTexture.GetAddressOf());
     CHECK_HR(hr);
 
     auto start = high_resolution_clock::now();
