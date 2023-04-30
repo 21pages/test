@@ -45,6 +45,7 @@ static long long gpu2host_us = 0;
 static long long gpu2host_us_copy = 0;
 static long long gpu2host_us_map = 0;
 static long long gpu2gpu_us = 0;
+static long long host2gpu_dyn_us = 0;
 
 static HRESULT HOST_2_GPU(ComPtr<ID3D11DeviceContext> deviceContext, ComPtr<ID3D11Texture2D> defaultTexture)
 {
@@ -66,6 +67,30 @@ static HRESULT HOST_2_GPU(ComPtr<ID3D11DeviceContext> deviceContext, ComPtr<ID3D
     auto start = high_resolution_clock::now();
     deviceContext->UpdateSubresource(defaultTexture.Get(), 0, &Box, data, width * 4, 4 * width * height);
     host2gpu_us += us_since(start);
+
+    delete[] data;
+
+    return S_OK;
+}
+
+static HRESULT HOST_2_GPU_DYNAMIC(ComPtr<ID3D11DeviceContext> deviceContext, ComPtr<ID3D11Texture2D> dynamicTexture)
+{
+    HRESULT hr;
+    uint8_t* data = new uint8_t[width * height * 4];
+    for (int i = 0; i < height; i++) {
+        for (int j = 0; j < width; j++) {
+            data[i * width + j] = i + j;
+        }
+    }
+
+    auto start = high_resolution_clock::now();
+    D3D11_MAPPED_SUBRESOURCE ResourceDesc = {};
+    start = high_resolution_clock::now();
+    hr = deviceContext->Map(dynamicTexture.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ResourceDesc);
+    CHECK_HR(hr);
+    memcpy(ResourceDesc.pData, data, width * height * 4);
+    deviceContext->Unmap(dynamicTexture.Get(), 0);
+    host2gpu_dyn_us += us_since(start);
 
     delete[] data;
 
@@ -184,6 +209,16 @@ static HRESULT Adapter(ComPtr<IDXGIAdapter1> pAdapter)
     hr = GPU_2_GPU(deviceContext, defaultTexture);
     CHECK_HR(hr);
 
+    desc.Usage = D3D11_USAGE_DYNAMIC;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    desc.MipLevels = 1;
+    ComPtr<ID3D11Texture2D> dynamicTexture;
+    hr = device->CreateTexture2D(&desc, nullptr, dynamicTexture.GetAddressOf());
+    CHECK_HR(hr);
+
+    hr = HOST_2_GPU_DYNAMIC(deviceContext, dynamicTexture);
+    CHECK_HR(hr);
+
     return S_OK;
 }
 
@@ -194,6 +229,7 @@ static HRESULT CallAdapter(ComPtr<IDXGIAdapter1> pAdapter)
     gpu2host_us_copy = 0;
     gpu2host_us_map = 0;
     gpu2gpu_us = 0;
+    host2gpu_dyn_us = 0;
 
     for (int i = 0; i < max_count; i++) {
         HRESULT hr = Adapter(pAdapter);
@@ -204,6 +240,7 @@ static HRESULT CallAdapter(ComPtr<IDXGIAdapter1> pAdapter)
     std::cout << "\t\tCopyResource: " << gpu2host_us_copy * 1.0 / 1000 / max_count << "ms" << std::endl;
     std::cout << "\t\tMap: " << gpu2host_us_map * 1.0 / 1000 / max_count << "ms" << std::endl;
     std::cout << "GPU -> GPU: " << gpu2gpu_us * 1.0 / 1000 / max_count << "ms" << std::endl;
+    std::cout << "HOST -> GPU DYNAMIC: " << host2gpu_dyn_us * 1.0 / 1000 / max_count << "ms" << std::endl;
 
 }
 
