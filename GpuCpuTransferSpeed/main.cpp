@@ -46,6 +46,7 @@ static long long gpu2host_us_copy = 0;
 static long long gpu2host_us_map = 0;
 static long long gpu2gpu_us = 0;
 static long long host2gpu_dyn_us = 0;
+static long long gpu2host_dyn_us = 0;
 
 static HRESULT HOST_2_GPU(ComPtr<ID3D11DeviceContext> deviceContext, ComPtr<ID3D11Texture2D> defaultTexture)
 {
@@ -124,6 +125,48 @@ static HRESULT GPU_2_HOST(ComPtr<ID3D11DeviceContext> deviceContext, ComPtr<ID3D
     CHECK_HR(hr);
     gpu2host_us_map += us_since(start);
     gpu2host_us += us_since(begin);
+
+    uint8_t* p = (uint8_t*)ResourceDesc.pData;
+    for (int i = 0; i < height; i++) {
+        for (int j = 0; j < width; j++) {
+            if (p[i * width + j] != (uint8_t)(i + j)) {
+                std::cerr << "read data mismatch !" << std::endl;
+                return S_FALSE;
+            }
+        }
+    }
+    deviceContext->Unmap(stagingTexture.Get(), 0);
+
+    return S_OK;
+}
+
+static HRESULT GPU_2_HOST_DYNAMIC(ComPtr<ID3D11DeviceContext> deviceContext, ComPtr<ID3D11Texture2D> dynamicTexture)
+{
+    HRESULT hr;
+
+    D3D11_TEXTURE2D_DESC desc;
+    dynamicTexture->GetDesc(&desc);
+    ComPtr<ID3D11Device> device;
+    deviceContext->GetDevice(device.GetAddressOf());
+
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    desc.BindFlags = 0;
+    ComPtr<ID3D11Texture2D> stagingTexture;
+    hr = device->CreateTexture2D(&desc, nullptr, stagingTexture.GetAddressOf());
+    CHECK_HR(hr);
+
+    auto start = high_resolution_clock::now();
+    auto begin = start;
+    deviceContext->CopyResource(stagingTexture.Get(), dynamicTexture.Get());
+    //gpu2host_us_copy += us_since(start);
+
+    D3D11_MAPPED_SUBRESOURCE ResourceDesc = {};
+    start = high_resolution_clock::now();
+    hr = deviceContext->Map(stagingTexture.Get(), 0, D3D11_MAP_READ, 0, &ResourceDesc);
+    CHECK_HR(hr);
+    //gpu2host_us_map += us_since(start);
+    gpu2host_dyn_us += us_since(begin);
 
     uint8_t* p = (uint8_t*)ResourceDesc.pData;
     for (int i = 0; i < height; i++) {
@@ -219,6 +262,9 @@ static HRESULT Adapter(ComPtr<IDXGIAdapter1> pAdapter)
     hr = HOST_2_GPU_DYNAMIC(deviceContext, dynamicTexture);
     CHECK_HR(hr);
 
+    hr = GPU_2_HOST_DYNAMIC(deviceContext, dynamicTexture);
+    CHECK_HR(hr);
+
     return S_OK;
 }
 
@@ -241,6 +287,7 @@ static HRESULT CallAdapter(ComPtr<IDXGIAdapter1> pAdapter)
     std::cout << "\t\tMap: " << gpu2host_us_map * 1.0 / 1000 / max_count << "ms" << std::endl;
     std::cout << "GPU -> GPU: " << gpu2gpu_us * 1.0 / 1000 / max_count << "ms" << std::endl;
     std::cout << "HOST -> GPU DYNAMIC: " << host2gpu_dyn_us * 1.0 / 1000 / max_count << "ms" << std::endl;
+    std::cout << "GPU -> HOST DYNAMIC: " << gpu2host_dyn_us * 1.0 / 1000 / max_count << "ms" << std::endl;
 
 }
 
